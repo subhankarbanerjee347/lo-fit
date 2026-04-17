@@ -9,7 +9,8 @@ This paper provides code for the paper [LoFiT: Localized Fine-tuning on LLM Repr
 1. [Installation](#installation)
 2. [Data](#data)
 3. [Train and Evaluate](#train-and-evaluate)
-4. [How to Cite](#how-to-cite)
+4. [LoFiT-RoPE Extension](#lofit-rope-extension)
+5. [How to Cite](#how-to-cite)
 
 ## Installation
 We have tested using Python 3.8.10. Before building the environment, please install the appropriate PyTorch version that corresponds to the hardware configurations (especially GPUs) of your machine here: https://pytorch.org/get-started/locally/
@@ -53,6 +54,110 @@ https://huggingface.co/fcyin/llama2_7B_base_lofit_mquake
 https://huggingface.co/fcyin/llama2_7B_base_lofit_truthfulqa
 
 You can use these weights and the code snippets included in the hugging face repo to run evaluations.
+
+## LoFiT-RoPE Extension
+
+This fork extends LoFiT with **LoFiT-RoPE**, which adds per-head positional intervention via learned RoPE
+(Rotary Position Embedding) modifications. Inspired by [LongRoPE](https://arxiv.org/abs/2402.13753), LoFiT-RoPE
+learns task-specific frequency rescale factors and phase offsets at a sparse set of attention heads selected by
+LoFiT's existing head selection step.
+
+### How It Works
+
+LoFiT-RoPE follows the same two-step framework as LoFiT:
+
+**Step 1 — Head Selection (unchanged):** Learn scaling factors with L1 regularization, select the top-K heads.
+
+**Step 2 — Joint Bias + RoPE Tuning (new):** At each selected head, learn three sets of parameters:
+- **Bias vectors** `v` (original LoFiT) — additive offsets on attention head outputs
+- **RoPE rescale factors** `λ` (new) — per-dimension frequency scaling (λ > 1 = attend closer, λ < 1 = attend further)
+- **RoPE phase offsets** `φ` (new) — constant angular shifts to reposition attention peaks
+
+### New `lofit_component` Options
+
+| Value | What it trains | Parameters per head | Use case |
+|-------|---------------|-------------------|----------|
+| `A` | Scaling factors (Step 1) | 128 | Head selection (unchanged) |
+| `v` | Bias vectors only (Step 2) | 128 | Original LoFiT |
+| `rope` | RoPE rescale + phase only (Step 2) | 128 (64+64) | Positional intervention only |
+| `v_rope` | Bias + RoPE rescale + phase (Step 2) | 256 (128+64+64) | Combined content + positional |
+
+### New Command-Line Arguments
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--rope_reg_alpha` | 0.01 | L2 regularization for rescale factors toward 1 (identity) |
+| `--rope_reg_beta` | 0.01 | L2 regularization for phase offsets toward 0 (no shift) |
+
+### Running LoFiT-RoPE
+
+**Prerequisites:** Same as the base LoFiT setup (see [Installation](#installation) above). Requires a GPU with
+48GB memory (e.g., NVIDIA A6000 or A100). You must configure model paths in `models_map` in `lofit_trainer.py`
+and have access to Llama-2 weights via HuggingFace.
+
+**Full pipeline on TruthfulQA (Llama 2-7B):**
+```
+bash train_script_truthfulqa_rope.sh
+```
+
+This runs Step 1 (head selection), then three Step 2 variants: rope-only, combined v_rope, and original v-only
+for comparison.
+
+**Individual steps:**
+
+```bash
+# Step 1: Head selection (same as original LoFiT)
+CUDA_VISIBLE_DEVICES=0 python lofit_trainer.py \
+    --task truthfulqa --base_model_name llama2_7B \
+    --ft_method lofit --lofit_component A \
+    --use_topk_heads 160 --tqa_fold_num 0 \
+    --lr 5e-3 --train_batch 8 --num_epoch 5 \
+    --output_dir ./finetuned_checkpoints/truthfulqa/step1 \
+    --run_mode train --output_file_name ./finetuned_outputs/step1 \
+    --applied_module attention --save_strategy no \
+    --l1_lambda 5e-4 --eval_batch 32 --seed 42
+
+# Step 2: RoPE-only intervention
+CUDA_VISIBLE_DEVICES=0 python lofit_trainer.py \
+    --task truthfulqa --base_model_name llama2_7B \
+    --ft_method lofit --lofit_component rope \
+    --use_topk_heads 32 --tqa_fold_num 0 \
+    --lofit_heads ./top_heads/llama2_7B_truthfulqa_Aonly_top160heads_42.npy \
+    --lr 1e-2 --train_batch 8 --num_epoch 5 \
+    --output_dir ./finetuned_checkpoints/truthfulqa/rope \
+    --run_mode train --output_file_name llama2_7B_truthfulqa_rope_42 \
+    --applied_module attention --save_strategy no \
+    --l1_lambda 0 --rope_reg_alpha 1e-2 --rope_reg_beta 1e-2 \
+    --eval_batch 32 --seed 42
+
+# Step 2: Combined bias + RoPE intervention
+CUDA_VISIBLE_DEVICES=0 python lofit_trainer.py \
+    --task truthfulqa --base_model_name llama2_7B \
+    --ft_method lofit --lofit_component v_rope \
+    --use_topk_heads 32 --tqa_fold_num 0 \
+    --lofit_heads ./top_heads/llama2_7B_truthfulqa_Aonly_top160heads_42.npy \
+    --lr 1e-2 --train_batch 8 --num_epoch 5 \
+    --output_dir ./finetuned_checkpoints/truthfulqa/v_rope \
+    --run_mode train --output_file_name llama2_7B_truthfulqa_v_rope_42 \
+    --applied_module attention --save_strategy no \
+    --l1_lambda 0 --rope_reg_alpha 1e-2 --rope_reg_beta 1e-2 \
+    --eval_batch 32 --seed 42
+```
+
+### Evaluation Metrics
+
+| Task | Metric | Output Location |
+|------|--------|----------------|
+| TruthfulQA | MC1 (single-answer accuracy), MC2 (multi-answer accuracy) | `./tqa_results/summary_dump/` |
+| MQuAKE | Exact Match (EM) | `<output_dir>/outputs.json` |
+| CLUTRR | Exact Match (EM) | `<output_dir>/outputs.json` |
+
+### Key Hyperparameters to Tune
+
+- `--lr`: Learning rate for Step 2. Start with 1e-2, also try 5e-3 and 1e-3.
+- `--rope_reg_alpha`: Higher values keep rescale factors closer to 1 (conservative). Range: 1e-3 to 1e-1.
+- `--rope_reg_beta`: Higher values keep phase offsets closer to 0 (conservative). Range: 1e-3 to 1e-1.
+- `--use_topk_heads`: Number of heads to intervene on. Paper uses 3% (K=32 for Llama 2-7B).
 
 ## How to Cite
 If you have any question regarding the code and our work, please feel free to reach out to Fangcong Yin (fangcongyin@utexas.edu).
