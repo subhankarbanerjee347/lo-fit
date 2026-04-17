@@ -187,6 +187,51 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids):
     return q_embed, k_embed
 
 
+def apply_rotary_pos_emb_per_head(q, k, position_ids, inv_freq, rope_rescale, rope_phase):
+    """Apply RoPE with per-head frequency rescaling and phase offsets (LoFiT-RoPE).
+
+    Args:
+        q: (bsz, num_heads, seq_len, head_dim)
+        k: (bsz, num_kv_heads, seq_len, head_dim)
+        position_ids: (bsz, seq_len)
+        inv_freq: (head_dim // 2,) base RoPE frequencies
+        rope_rescale: ParameterList of num_heads params, each (head_dim // 2,)
+        rope_phase: ParameterList of num_heads params, each (head_dim // 2,)
+    """
+    bsz, num_heads, seq_len, head_dim = q.shape
+    num_kv_heads = k.shape[1]
+
+    # Stack per-head params: (num_heads, half_dim)
+    rescale = torch.stack(list(rope_rescale))
+    phase = torch.stack(list(rope_phase))
+
+    # Compute per-head modified frequencies: rescale * inv_freq
+    # rescale: (num_heads, half_dim), inv_freq: (half_dim,) -> (num_heads, half_dim)
+    modified_freq = rescale * inv_freq.unsqueeze(0)
+
+    # Compute angles: positions (bsz, seq_len) x modified_freq (num_heads, half_dim)
+    # (bsz, 1, seq_len, 1) * (1, num_heads, 1, half_dim) -> (bsz, num_heads, seq_len, half_dim)
+    positions = position_ids.float()
+    angles = positions.unsqueeze(1).unsqueeze(3) * modified_freq.unsqueeze(0).unsqueeze(2)
+
+    # Add phase offsets: (1, num_heads, 1, half_dim)
+    angles = angles + phase.unsqueeze(0).unsqueeze(2)
+
+    # Compute cos/sin and duplicate to full head_dim (matching rotate_half convention)
+    cos_h = torch.cat([angles.cos(), angles.cos()], dim=-1).to(q.dtype)
+    sin_h = torch.cat([angles.sin(), angles.sin()], dim=-1).to(q.dtype)
+
+    # Apply to Q (all num_heads)
+    q_embed = (q * cos_h) + (rotate_half(q) * sin_h)
+
+    # Apply to K (first num_kv_heads, handles both MHA and GQA)
+    cos_k = cos_h[:, :num_kv_heads]
+    sin_k = sin_h[:, :num_kv_heads]
+    k_embed = (k * cos_k) + (rotate_half(k) * sin_k)
+
+    return q_embed, k_embed
+
+
 class LlamaMLP(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -258,6 +303,12 @@ class LlamaAttention(nn.Module):
         self.attn_A = nn.ParameterList([nn.Parameter(torch.zeros(self.head_dim,requires_grad=True),requires_grad=True) for _ in range(self.num_heads)])
         ### Attn_v: The trainable vector of LoFiT bias
         self.attn_v = nn.ParameterList([nn.Parameter(torch.zeros(self.head_dim,requires_grad=True),requires_grad=True) for _ in range(self.num_heads)])
+        ### RoPE_rescale: Per-head RoPE frequency rescaling factors (LoFiT-RoPE, initialized to 1 = identity)
+        self.rope_rescale = nn.ParameterList([nn.Parameter(torch.ones(self.head_dim // 2), requires_grad=True) for _ in range(self.num_heads)])
+        ### RoPE_phase: Per-head RoPE phase offsets (LoFiT-RoPE, initialized to 0 = no shift)
+        self.rope_phase = nn.ParameterList([nn.Parameter(torch.zeros(self.head_dim // 2), requires_grad=True) for _ in range(self.num_heads)])
+        ### Flag to enable per-head RoPE computation (set True during RoPE training/inference)
+        self.use_rope_per_head = False
         ### If appplied_module == 'attention,' LoFiT is applied to the attention output
         self.applied_module = None
         self._init_rope()
@@ -322,8 +373,14 @@ class LlamaAttention(nn.Module):
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
             kv_seq_len += past_key_value[0].shape[-2]
-        cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
+        if self.use_rope_per_head:
+            query_states, key_states = apply_rotary_pos_emb_per_head(
+                query_states, key_states, position_ids,
+                self.rotary_emb.inv_freq, self.rope_rescale, self.rope_phase
+            )
+        else:
+            cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
+            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
         if past_key_value is not None:
             # reuse k, v, self_attention

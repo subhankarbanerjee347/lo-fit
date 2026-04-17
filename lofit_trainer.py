@@ -44,6 +44,8 @@ parser.add_argument('--save_strategy',type=str,default='best',required=False,hel
 parser.add_argument('--tqa_fold_num',type=int,default=0,required=False,help='The fold number to use for truthfulqa; can only be 0 or 1 for two-fold cross validation')
 parser.add_argument('--apply_chat_template',default=False, type=lambda x: (str(x).lower() == 'true'),help='Using llama2 chat template in the prompt; False by default')
 parser.add_argument('--use_topk_heads',type=int,help='The number of top attention heads to select; if in the head selection step, K means only save the top-k heads; if in the bias tuning step, K means only use the top-k heads from the loaded top heads to tune the biases')
+parser.add_argument('--rope_reg_alpha', type=float, default=1e-2, required=False, help='L2 regularization coefficient for RoPE rescale factors toward 1 (LoFiT-RoPE)')
+parser.add_argument('--rope_reg_beta', type=float, default=1e-2, required=False, help='L2 regularization coefficient for RoPE phase offsets toward 0 (LoFiT-RoPE)')
 args = parser.parse_args()
 ### Turn Wandb log on if it is in train mode
 if args.run_mode == 'train_wandb':
@@ -184,7 +186,7 @@ if args.run_mode!='test':
                     trainable_params.append(module)
                     module.requires_grad = True
                     num_params+=module.numel()
-            if args.lofit_component == 'v':
+            if args.lofit_component in ['v', 'v_rope']:
                 attn_v = model.model.layers[i].self_attn.attn_v
                 for j,module in enumerate(attn_v):
                     if lofit_heads is None or (i,j) in lofit_heads:
@@ -192,8 +194,22 @@ if args.run_mode!='test':
                         module.requires_grad = True
                         num_params+=module.numel()
                         count+=1
+            if args.lofit_component in ['rope', 'v_rope']:
+                rope_rescale = model.model.layers[i].self_attn.rope_rescale
+                rope_phase = model.model.layers[i].self_attn.rope_phase
+                for j in range(len(rope_rescale)):
+                    if lofit_heads is None or (i,j) in lofit_heads:
+                        rope_rescale[j].requires_grad = True
+                        rope_phase[j].requires_grad = True
+                        trainable_params.append(rope_rescale[j])
+                        trainable_params.append(rope_phase[j])
+                        num_params += rope_rescale[j].numel() + rope_phase[j].numel()
         else:
             raise ValueError(f'Fine-tuning {applied_module} is supported yet!')
+    ### Enable per-head RoPE computation for LoFiT-RoPE
+    if args.lofit_component in ['rope', 'v_rope']:
+        for i in range(model.config.num_hidden_layers):
+            model.model.layers[i].self_attn.use_rope_per_head = True
     print('trainable params:',num_params)
     # optimizer = AdamW(trainable_params, lr=lr)
 if args.save_strategy == 'best':
@@ -275,8 +291,10 @@ elif args.task in ['mquake','clutrr']:
     )
 if args.run_mode!='test':
     trainer.l1_lambda = l1_lambda
+    trainer.rope_reg_alpha = args.rope_reg_alpha
+    trainer.rope_reg_beta = args.rope_reg_beta
     if args.ft_method == 'lofit':
-        
+
         for i in range(model.config.num_hidden_layers):
             if applied_module == 'attention':
                 if args.lofit_component == 'A':
@@ -284,12 +302,13 @@ if args.run_mode!='test':
                     for j,module in enumerate(attn_A):
                         ### Use miu_{A} = 0, sigma_{A} = 1e-3 as the default
                         nn.init.normal_(module,mean=0,std=1e-3)
-                if args.lofit_component == 'v':
+                if args.lofit_component in ['v', 'v_rope']:
                     attn_v = model.model.layers[i].self_attn.attn_v
                     for j,module in enumerate(attn_v):
                         if lofit_heads is None or (i,j) in lofit_heads:
                             ### Use miu_{v} = 0, sigma_{v} = 1e-3 as the default
                             nn.init.normal_(module,mean=0,std=1e-3)
+                ### RoPE params keep their identity initialization (ones/zeros) — no re-init needed
     trainer.train(
     )
 if args.lofit_component=='A':

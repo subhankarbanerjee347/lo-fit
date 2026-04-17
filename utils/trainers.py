@@ -34,6 +34,18 @@ class CustomDPOTrainer(DPOTrainer):
 
 
             loss+=l1_lambda*l1norm
+        ### RoPE regularization (LoFiT-RoPE): L2 toward identity for rescale, L2 toward 0 for phase
+        rope_reg_alpha = getattr(self, 'rope_reg_alpha', 0)
+        rope_reg_beta = getattr(self, 'rope_reg_beta', 0)
+        if rope_reg_alpha > 0 or rope_reg_beta > 0:
+            rope_reg_loss = 0
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    if 'rope_rescale' in name and rope_reg_alpha > 0:
+                        rope_reg_loss = rope_reg_loss + rope_reg_alpha * ((param - 1.0) ** 2).sum()
+                    elif 'rope_phase' in name and rope_reg_beta > 0:
+                        rope_reg_loss = rope_reg_loss + rope_reg_beta * (param ** 2).sum()
+            loss = loss + rope_reg_loss
         return (loss, metrics) if return_outputs else loss   
     def test(self, fname=None,eval_dataset=None, ignore_keys=None, sanity_check=False, metrics=['mc'],model_name=None,**kwargs):
         if sanity_check:
@@ -62,6 +74,18 @@ class CustomSFTTrainer(SFTTrainer):
             if param.requires_grad:
                 l1norm+=param.abs().sum()
         loss+=l1_lambda*l1norm
+        ### RoPE regularization (LoFiT-RoPE): L2 toward identity for rescale, L2 toward 0 for phase
+        rope_reg_alpha = getattr(self, 'rope_reg_alpha', 0)
+        rope_reg_beta = getattr(self, 'rope_reg_beta', 0)
+        if rope_reg_alpha > 0 or rope_reg_beta > 0:
+            rope_reg_loss = 0
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    if 'rope_rescale' in name and rope_reg_alpha > 0:
+                        rope_reg_loss = rope_reg_loss + rope_reg_alpha * ((param - 1.0) ** 2).sum()
+                    elif 'rope_phase' in name and rope_reg_beta > 0:
+                        rope_reg_loss = rope_reg_loss + rope_reg_beta * (param ** 2).sum()
+            loss = loss + rope_reg_loss
         if return_outputs:
             return loss,outputs
         else:
