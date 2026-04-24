@@ -13,6 +13,10 @@ task="truthfulqa";
 seed=42;
 echo "LoFiT-RoPE: ${model_name} on ${task}";
 
+### Use cached model files only — avoids SSL errors behind corporate proxies
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
 ###############################################################################
 # Step 1: Head Selection (shared across all Step 2 variants)
 # This is identical to the original LoFiT head selection step.
@@ -28,7 +32,7 @@ CUDA_VISIBLE_DEVICES=0 python lofit_trainer.py \
     --use_topk_heads 160 \
     --tqa_fold_num 0 \
     --lr 5e-3 \
-    --train_batch 8 \
+    --train_batch 4 \
     --num_epoch 5 \
     --output_dir "./finetuned_checkpoints/${task}/${model_name}_${task}_Aonly_seed${seed}" \
     --run_mode train \
@@ -36,7 +40,7 @@ CUDA_VISIBLE_DEVICES=0 python lofit_trainer.py \
     --applied_module attention \
     --save_strategy no \
     --l1_lambda 5e-4 \
-    --eval_batch 32 \
+    --eval_batch 16 \
     --seed $seed;
 
 ### Fold 1
@@ -49,7 +53,7 @@ CUDA_VISIBLE_DEVICES=0 python lofit_trainer.py \
     --use_topk_heads 160 \
     --tqa_fold_num 1 \
     --lr 5e-3 \
-    --train_batch 8 \
+    --train_batch 4 \
     --num_epoch 5 \
     --output_dir "./finetuned_checkpoints/${task}/${model_name}_${task}_Aonly_seed${seed}" \
     --run_mode train \
@@ -57,7 +61,7 @@ CUDA_VISIBLE_DEVICES=0 python lofit_trainer.py \
     --applied_module attention \
     --save_strategy no \
     --l1_lambda 5e-4 \
-    --eval_batch 32 \
+    --eval_batch 16 \
     --seed $seed;
 
 ###############################################################################
@@ -77,7 +81,7 @@ CUDA_VISIBLE_DEVICES=0 python lofit_trainer.py \
     --use_topk_heads 32 \
     --lofit_heads "./top_heads/${model_name}_${task}_Aonly_top160heads_${seed}.npy" \
     --lr 1e-2 \
-    --train_batch 8 \
+    --train_batch 4 \
     --num_epoch 5 \
     --output_dir "./finetuned_checkpoints/${task}/${model_name}_${task}_rope_seed${seed}" \
     --run_mode train \
@@ -87,7 +91,7 @@ CUDA_VISIBLE_DEVICES=0 python lofit_trainer.py \
     --l1_lambda 0 \
     --rope_reg_alpha 1e-2 \
     --rope_reg_beta 1e-2 \
-    --eval_batch 32 \
+    --eval_batch 16 \
     --seed $seed;
 
 ### Fold 1
@@ -101,7 +105,7 @@ CUDA_VISIBLE_DEVICES=0 python lofit_trainer.py \
     --use_topk_heads 32 \
     --lofit_heads "./top_heads/${model_name}_${task}_Aonly_top160heads_${seed}.npy" \
     --lr 1e-2 \
-    --train_batch 8 \
+    --train_batch 4 \
     --num_epoch 5 \
     --output_dir "./finetuned_checkpoints/${task}/${model_name}_${task}_rope_seed${seed}" \
     --run_mode train \
@@ -111,7 +115,7 @@ CUDA_VISIBLE_DEVICES=0 python lofit_trainer.py \
     --l1_lambda 0 \
     --rope_reg_alpha 1e-2 \
     --rope_reg_beta 1e-2 \
-    --eval_batch 32 \
+    --eval_batch 16 \
     --seed $seed;
 
 ###############################################################################
@@ -131,7 +135,7 @@ CUDA_VISIBLE_DEVICES=0 python lofit_trainer.py \
     --use_topk_heads 32 \
     --lofit_heads "./top_heads/${model_name}_${task}_Aonly_top160heads_${seed}.npy" \
     --lr 1e-2 \
-    --train_batch 8 \
+    --train_batch 4 \
     --num_epoch 5 \
     --output_dir "./finetuned_checkpoints/${task}/${model_name}_${task}_v_rope_seed${seed}" \
     --run_mode train \
@@ -141,7 +145,7 @@ CUDA_VISIBLE_DEVICES=0 python lofit_trainer.py \
     --l1_lambda 0 \
     --rope_reg_alpha 1e-2 \
     --rope_reg_beta 1e-2 \
-    --eval_batch 32 \
+    --eval_batch 16 \
     --seed $seed;
 
 ### Fold 1
@@ -155,7 +159,7 @@ CUDA_VISIBLE_DEVICES=0 python lofit_trainer.py \
     --use_topk_heads 32 \
     --lofit_heads "./top_heads/${model_name}_${task}_Aonly_top160heads_${seed}.npy" \
     --lr 1e-2 \
-    --train_batch 8 \
+    --train_batch 4 \
     --num_epoch 5 \
     --output_dir "./finetuned_checkpoints/${task}/${model_name}_${task}_v_rope_seed${seed}" \
     --run_mode train \
@@ -165,5 +169,5 @@ CUDA_VISIBLE_DEVICES=0 python lofit_trainer.py \
     --l1_lambda 0 \
     --rope_reg_alpha 1e-2 \
     --rope_reg_beta 1e-2 \
-    --eval_batch 32 \
+    --eval_batch 16 \
     --seed $seed;

@@ -549,7 +549,8 @@ def alt_tqa_evaluate(models, metric_names, input_path, output_path, summary_path
             llama_model = models[mdl]
 
             # llama_tokenizer = llama.LlamaTokenizer.from_pretrained(ENGINE_MAP[mdl])
-            llama_tokenizer = AutoTokenizer.from_pretrained(ENGINE_MAP[mdl])
+            # Use the tokenizer passed in if available, otherwise load from ENGINE_MAP
+            llama_tokenizer = tokenizer if tokenizer is not None else AutoTokenizer.from_pretrained(ENGINE_MAP[mdl])
             # llama_tokenizer = tokenizer
             
             if 'judge' in metric_names or 'info' in metric_names:
