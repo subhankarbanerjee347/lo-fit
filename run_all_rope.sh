@@ -166,8 +166,8 @@ run_experiment() {
 # Main: Run all combinations
 ###############################################################################
 
-# Models to run (gemma excluded — needs modeling_gemma.py update)
-MODELS="llama2_7B llama2_13B"
+# Models to run (Llama models first for partial results, Gemma last)
+MODELS="llama2_7B llama2_13B gemma_7b"
 TASKS="truthfulqa mquake clutrr"
 
 # Apply filters if provided
